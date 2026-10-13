@@ -237,15 +237,16 @@ class FrameXTVProvider : MainAPI() {
                 }
 
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = server,
                         url = streamUrl,
-                        referer = referer,
-                        quality = quality,
-                        isM3u8 = isHls,
-                        headers = linkHeaders
-                    )
+                        type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = referer
+                        this.quality = quality
+                        this.headers = linkHeaders
+                    }
                 )
                 foundAnyLink = true
 
@@ -255,14 +256,15 @@ class FrameXTVProvider : MainAPI() {
                         if (!seenUrls.contains(directUrl)) {
                             seenUrls.add(directUrl)
                             callback.invoke(
-                                ExtractorLink(
+                                newExtractorLink(
                                     source = name,
                                     name = "$server (Direct)",
                                     url = directUrl,
-                                    referer = "https://www.rivestream.app/",
-                                    quality = quality,
-                                    isM3u8 = directUrl.contains(".m3u8")
-                                )
+                                    type = if (directUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                ) {
+                                    this.referer = "https://www.rivestream.app/"
+                                    this.quality = quality
+                                }
                             )
                         }
                     }
