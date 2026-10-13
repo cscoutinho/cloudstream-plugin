@@ -2,6 +2,9 @@ package com.framextv
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -99,15 +102,14 @@ class FrameXTVProvider : MainAPI() {
 
             val totalEpisodes = media?.episodes ?: 12
             val episodes = (1..totalEpisodes).map { epNum ->
-                val epData = AppUtils.toJson(
+                newEpisode(
                     EpisodeData(
                         id = mediaId,
                         type = "anime",
                         season = 1,
                         episode = epNum
                     )
-                )
-                newEpisode(epData) {
+                ) {
                     this.name = "Episode $epNum"
                     this.season = 1
                     this.episode = epNum
@@ -146,17 +148,15 @@ class FrameXTVProvider : MainAPI() {
                     val seasonRes = app.get(seasonUrl, headers = defaultHeaders).parsedSafe<SeasonEpisodesDto>()
                     seasonRes?.episodes?.forEach { ep ->
                         val epNum = ep.number ?: return@forEach
-                        val epData = AppUtils.toJson(
-                            EpisodeData(
-                                id = mediaId,
-                                type = "tv",
-                                season = sNum,
-                                episode = epNum
-                            )
-                        )
-
                         episodes.add(
-                            newEpisode(epData) {
+                            newEpisode(
+                                EpisodeData(
+                                    id = mediaId,
+                                    type = "tv",
+                                    season = sNum,
+                                    episode = epNum
+                                )
+                            ) {
                                 this.name = ep.name ?: "Episode $epNum"
                                 this.season = sNum
                                 this.episode = epNum
@@ -178,12 +178,10 @@ class FrameXTVProvider : MainAPI() {
                 this.tags = genres
             }
         } else {
-            val epData = AppUtils.toJson(
-                EpisodeData(
-                    id = mediaId,
-                    type = "movie"
-                )
-            )
+            val epData = EpisodeData(
+                id = mediaId,
+                type = "movie"
+            ).toJson()
 
             newMovieLoadResponse(title, url, TvType.Movie, epData) {
                 this.posterUrl = poster
@@ -201,7 +199,7 @@ class FrameXTVProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val epData = AppUtils.tryParseJson<EpisodeData>(data) ?: return false
+        val epData = tryParseJson<EpisodeData>(data) ?: return false
         val mediaId = epData.id
         val mediaType = epData.type
         val season = epData.season
@@ -210,13 +208,13 @@ class FrameXTVProvider : MainAPI() {
         val seenUrls = mutableSetOf<String>()
         var foundAnyLink = false
 
-        fun emitSources(sources: List<StreamSourceDto>?) {
-            sources?.forEach { src ->
-                var streamUrl = src.url?.trim() ?: return@forEach
+        suspend fun emitSources(sources: List<StreamSourceDto>?) {
+            for (src in sources ?: emptyList()) {
+                var streamUrl = src.url?.trim() ?: continue
                 if (streamUrl.startsWith("/")) {
                     streamUrl = "$API_URL$streamUrl"
                 }
-                if (seenUrls.contains(streamUrl)) return@forEach
+                if (seenUrls.contains(streamUrl)) continue
                 seenUrls.add(streamUrl)
 
                 val server = src.server ?: src.audio?.let { "frameXTV ($it)" } ?: "frameXTV Server"
@@ -359,7 +357,6 @@ class FrameXTVProvider : MainAPI() {
         val normalizedType = type?.lowercase() ?: "movie"
         val posterUrl = poster ?: image
 
-        val ratingDouble = rating?.toDoubleOrNull()
         val itemYear = year?.toIntOrNull()
 
         return when (normalizedType) {
@@ -368,7 +365,6 @@ class FrameXTVProvider : MainAPI() {
                 newAnimeSearchResponse(itemTitle, itemUrl, TvType.Anime) {
                     this.posterUrl = posterUrl
                     this.year = itemYear
-                    ratingDouble?.let { this.rating = (it * 10).toInt() }
                 }
             }
             "tv" -> {
@@ -376,7 +372,6 @@ class FrameXTVProvider : MainAPI() {
                 newTvSeriesSearchResponse(itemTitle, itemUrl, TvType.TvSeries) {
                     this.posterUrl = posterUrl
                     this.year = itemYear
-                    ratingDouble?.let { this.rating = (it * 10).toInt() }
                 }
             }
             else -> {
@@ -384,7 +379,6 @@ class FrameXTVProvider : MainAPI() {
                 newMovieSearchResponse(itemTitle, itemUrl, TvType.Movie) {
                     this.posterUrl = posterUrl
                     this.year = itemYear
-                    ratingDouble?.let { this.rating = (it * 10).toInt() }
                 }
             }
         }
