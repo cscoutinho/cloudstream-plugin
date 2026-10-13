@@ -25,37 +25,32 @@ jobs:
         with:
           path: "src"
 
-      - name: Checkout Builds Branch
-        uses: actions/checkout@v4
-        with:
-          ref: "builds"
-          path: "builds"
-        continue-on-error: true
-
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
       - name: Build Plugins
         run: |
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew make makePluginsJson
+          ./gradlew make makePluginsJson --no-daemon
           mkdir -p $GITHUB_WORKSPACE/builds
-          rm -f $GITHUB_WORKSPACE/builds/*.cs3
-          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds/
-          cp build/plugins.json $GITHUB_WORKSPACE/builds/
+          find . -name "*.cs3" -exec cp {} $GITHUB_WORKSPACE/builds/ \;
+          find . -name "plugins.json" -exec cp {} $GITHUB_WORKSPACE/builds/ \;
 
       - name: Push Builds
         run: |
           cd $GITHUB_WORKSPACE/builds
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
+          git init
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git checkout -b builds
           git add .
           git commit -m "Build $GITHUB_SHA" || exit 0
-          git push origin builds || git push --force origin HEAD:builds
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git push -u origin builds --force
