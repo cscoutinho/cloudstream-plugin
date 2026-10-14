@@ -214,3 +214,21 @@ data class CineJoyStream(
     @JsonProperty("id") val id: String? = null,
     @JsonProperty("playlist") val playlist: String? = null
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class MovySeedResponse(
+    @JsonProperty("seed") val seed: String? = null,
+    @JsonProperty("ttlMs") val ttlMs: Long? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class MovySourcesResponse(
+    @JsonProperty("sources") val sources: List<MovySourceItem>? = null,
+    @JsonProperty("subtitles") val subtitles: List<SubtitleDto>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class MovySourceItem(
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("quality") val quality: String? = null
+)

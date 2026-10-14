@@ -338,12 +338,14 @@ class FrameXTVProvider : MainAPI() {
             // Non-fatal
         }
 
-        // Strategy 3: Miner XIX (High-speed Movy cluster)
+        // Strategy 3: Miner XIX (High-speed Movy cluster via native MVM1 XOR decryption)
         try {
-            val minerUrl = "$API_URL/api/stream?id=$mediaId&type=$mediaType$tvQuery&provider=miner"
-            val minerRes = app.get(minerUrl, headers = defaultHeaders).parsedSafe<StreamResponseDto>()
-            emitSources(minerRes?.sources)
-            emitSubtitles(minerRes?.subtitles)
+            val tmdbIdLong = mediaId.toLongOrNull()
+            if (tmdbIdLong != null) {
+                if (extractMovy(tmdbIdLong, mediaType, season, episode, subtitleCallback, callback)) {
+                    foundAnyLink = true
+                }
+            }
         } catch (e: Exception) {
             // Non-fatal
         }
@@ -489,7 +491,7 @@ class FrameXTVProvider : MainAPI() {
                     } else if (server == "Solara") {
                         // Solara returns an adaptive HLS master playlist with 1080p, 720p and 360p
                         val masterRes = try {
-                            app.get(playlistUrl, headers = cinejoyHeaders, timeout = 3)
+                            app.get(playlistUrl, headers = cinejoyHeaders, timeout = 6)
                         } catch (e: Exception) {
                             null
                         }
@@ -562,6 +564,192 @@ class FrameXTVProvider : MainAPI() {
                 }
             } catch (e: Exception) {
                 // Continue to next CineJoy server
+            }
+        }
+        return found
+    }
+
+    private class MovyState(
+        val s: LongArray = LongArray(61),
+        val isSet: ByteArray = ByteArray(61),
+        var acc: Long = 0L
+    )
+
+    private fun movyW(e: Long): Long {
+        var t = e and 0xFFFFFFFFL
+        t = t xor (t shr 16)
+        t = (t * 2246822507L) and 0xFFFFFFFFL
+        t = t xor (t shr 13)
+        t = (t * 3266489909L) and 0xFFFFFFFFL
+        return (t xor (t shr 16)) and 0xFFFFFFFFL
+    }
+
+    private fun movyRotl(e: Long, t: Int): Long {
+        val n = t and 31
+        if (n == 0) return e and 0xFFFFFFFFL
+        val v = e and 0xFFFFFFFFL
+        return ((v shl n) or (v ushr (32 - n))) and 0xFFFFFFFFL
+    }
+
+    private fun movyLe(s: String): Long {
+        var t = 2166136261L
+        for (i in 0 until s.length) {
+            val ch = s[i].code.toLong()
+            t = (((t xor ch) and 0xFFFFFFFFL) * 16777619L) and 0xFFFFFFFFL
+        }
+        return movyW(t)
+    }
+
+    private fun movyUe(seed: String, tmdbId: Long): MovyState {
+        val state = MovyState()
+        var i = movyW(movyLe(seed) xor movyW((tmdbId xor 2654435769L) and 0xFFFFFFFFL))
+        for (e in 0 until 8) {
+            val t = (i % 61L).toInt()
+            i = movyRotl((i + 2654435769L) and 0xFFFFFFFFL, 7 + (7 and e))
+            state.s[t] = (i xor movyW(i)) and 0xFFFFFFFFL
+            state.isSet[t] = 1
+            i = movyW((i + t.toLong()) and 0xFFFFFFFFL)
+        }
+        state.acc = movyW((2779096485L xor i) and 0xFFFFFFFFL)
+        return state
+    }
+
+    private fun movyDe(state: MovyState, t: Long): Long {
+        var n = state.acc
+        val r = (n % 61L).toInt()
+        var i = 0L
+        var a = 0L
+        if (state.isSet[r].toInt() != 0) {
+            i = 0xFFFFFFFFL
+            a = state.s[r]
+        }
+        val o = ((t + 1L) * 2654435769L) and 0xFFFFFFFFL
+        val s = n
+        val c = (a xor o) and 0xFFFFFFFFL
+        val part1 = movyRotl((((s xor c) or (s and c and i)) + n) and 0xFFFFFFFFL, 31 and r)
+        val part2 = movyRotl(n, 31 and (r * 7))
+        n = movyW((part1 xor part2) + 2654435769L and 0xFFFFFFFFL)
+        state.s[r] = n
+        state.isSet[r] = 1
+        state.acc = n
+        return n
+    }
+
+    private fun decryptMvm1(ciphertext: String, seed: String, tmdbId: Long): String? {
+        return try {
+            val raw = base64UrlDecode(ciphertext.trim())
+            if (raw.size <= 4) return null
+            val state = movyUe(seed, tmdbId)
+            var o = 0L
+            var s = 0
+            val a = raw.size
+            while (s < a) {
+                val e = movyDe(state, o++)
+                raw[s] = (raw[s].toInt() xor (e and 0xFFL).toInt()).toByte()
+                s++
+                if (s < a) {
+                    raw[s] = (raw[s].toInt() xor ((e shr 8) and 0xFFL).toInt()).toByte()
+                    s++
+                }
+                if (s < a) {
+                    raw[s] = (raw[s].toInt() xor ((e shr 16) and 0xFFL).toInt()).toByte()
+                    s++
+                }
+                if (s < a) {
+                    raw[s] = (raw[s].toInt() xor ((e shr 24) and 0xFFL).toInt()).toByte()
+                    s++
+                }
+            }
+            if (raw[0] != 109.toByte() || raw[1] != 118.toByte() || raw[2] != 109.toByte() || raw[3] != 49.toByte()) {
+                return null
+            }
+            String(raw, 4, raw.size - 4, Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun extractMovy(
+        tmdbId: Long,
+        mediaType: String,
+        season: Int?,
+        episode: Int?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var found = false
+        val movyHeaders = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Origin" to "https://www.movy.bz",
+            "Referer" to "https://www.movy.bz/"
+        )
+
+        val seedRes = try {
+            app.get(
+                "https://api.wecollege.net/seed?mediaId=$tmdbId",
+                headers = movyHeaders,
+                timeout = 5
+            ).parsedSafe<MovySeedResponse>()
+        } catch (e: Exception) {
+            null
+        }
+        val seed = seedRes?.seed ?: return false
+
+        val isTv = mediaType == "tv"
+        val tvQuery = if (isTv) "&seasonId=${season ?: 1}&episodeId=${episode ?: 1}" else ""
+
+        val endpoints = listOf(
+            Pair("miami", "Miami"),
+            Pair("atlanta", "Atlanta")
+        )
+
+        for ((endpoint, cityName) in endpoints) {
+            try {
+                val queryUrl = "https://api.wecollege.net/$endpoint/sources?mediaType=${if (isTv) "tv" else "movie"}&tmdbId=$tmdbId&enc=2&seed=$seed$tvQuery"
+                val res = app.get(queryUrl, headers = movyHeaders, timeout = 5)
+                if (res.code != 200) continue
+                val rawText = res.text.trim()
+                if (rawText.length <= 10) continue
+
+                val decrypted = decryptMvm1(rawText, seed, tmdbId) ?: continue
+                val parsed = tryParseJson<MovySourcesResponse>(decrypted) ?: continue
+
+                parsed.subtitles?.forEach { sub ->
+                    val subUrl = sub.url?.trim() ?: return@forEach
+                    val lang = sub.label ?: sub.language ?: sub.lang ?: "Sub"
+                    subtitleCallback.invoke(SubtitleFile(lang = lang, url = subUrl))
+                }
+
+                for (src in parsed.sources ?: emptyList()) {
+                    val streamUrl = src.url?.trim() ?: continue
+                    if (!streamUrl.startsWith("http")) continue
+
+                    val q = src.quality ?: "1080p"
+                    val qualityVal = parseQuality(q)
+                    val isHls = streamUrl.contains(".m3u8")
+
+                    val proxiedUrl = "https://spatula.hybrows.workers.dev/?origin=https%3A%2F%2Fwww.movy.bz&ref=https%3A%2F%2Fwww.movy.bz%2F&url=" + URLEncoder.encode(streamUrl, "UTF-8")
+
+                    callback.invoke(
+                        newExtractorLink(
+                            source = name,
+                            name = "Miner XIX ($cityName) - $q",
+                            url = proxiedUrl,
+                            type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = "https://www.movy.bz/"
+                            this.quality = qualityVal
+                            this.headers = mapOf(
+                                "Referer" to "https://www.movy.bz/",
+                                "Origin" to "https://www.movy.bz",
+                                "User-Agent" to defaultHeaders["User-Agent"]!!
+                            )
+                        }
+                    )
+                    found = true
+                }
+            } catch (e: Exception) {
+                // Continue to next endpoint
             }
         }
         return found
