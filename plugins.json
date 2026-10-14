@@ -1,0 +1,24 @@
+[
+    {
+        "iconUrl": "https://framextv.xyz/icon-192.png",
+        "fileHash": "sha256-4b9c7b34f59cd14ac884689884d1edde85d8973fa4ae0681317cac1773075225",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/cscoutinho/cloudstream-plugin",
+        "fileSize": 65721,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "Community"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "version": 4,
+        "internalName": "FrameXTV",
+        "description": "High-performance native scraper for frameXTV (Movies, TV Shows & Anime)",
+        "url": "https://raw.githubusercontent.com/cscoutinho/cloudstream-plugin/builds/FrameXTV.cs3",
+        "name": "FrameXTV"
+    }
+]

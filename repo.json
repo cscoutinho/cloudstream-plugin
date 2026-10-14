@@ -1,0 +1,8 @@
+{
+  "name": "FrameXTV Repository",
+  "description": "FrameXTV provider for CloudStream 3",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/cscoutinho/cloudstream-plugin/builds/plugins.json"
+  ]
+}
