@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 cloudstream {
     description = "High-performance native scraper for frameXTV (Movies, TV Shows & Anime)"

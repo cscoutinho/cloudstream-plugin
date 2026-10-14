@@ -221,9 +221,12 @@ class FrameXTVProvider : MainAPI() {
                     streamUrl = "$API_URL$streamUrl"
                 }
                 if (seenUrls.contains(streamUrl)) continue
+
+                // Skip tcloud: chunks use steganographic PNG headers that fail in ExoPlayer
+                if (src.quality?.contains("tcloud", ignoreCase = true) == true) continue
+
                 seenUrls.add(streamUrl)
 
-                val server = src.server ?: src.audio?.let { "frameXTV ($it)" } ?: "frameXTV Server"
                 val quality = parseQuality(src.quality)
                 val isHls = src.type.equals("hls", ignoreCase = true) || streamUrl.contains(".m3u8")
 
@@ -240,10 +243,30 @@ class FrameXTVProvider : MainAPI() {
                     "https://framextv.xyz/"
                 }
 
+                val cleanServerName = when {
+                    src.quality.equals("dcloud", ignoreCase = true) || src.server?.contains("PrimeVids", ignoreCase = true) == true ->
+                        "PrimeVids - 1080p [Fast HLS]"
+                    src.server?.contains("Citadel", ignoreCase = true) == true -> {
+                        if (src.quality?.contains("720") == true) "Citadel - 720p [English]"
+                        else if (src.quality?.contains("480") == true) "Citadel - 480p [English]"
+                        else "Citadel - ${src.quality ?: "HLS"}"
+                    }
+                    else -> {
+                        val qLabel = when (quality) {
+                            Qualities.P1080.value -> "1080p"
+                            Qualities.P720.value -> "720p"
+                            Qualities.P480.value -> "480p"
+                            Qualities.P2160.value -> "4K"
+                            else -> src.quality ?: "Auto"
+                        }
+                        "${src.server ?: "frameXTV"} - $qLabel"
+                    }
+                }
+
                 callback.invoke(
                     newExtractorLink(
                         source = name,
-                        name = server,
+                        name = cleanServerName,
                         url = streamUrl,
                         type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     ) {
@@ -253,26 +276,6 @@ class FrameXTVProvider : MainAPI() {
                     }
                 )
                 foundAnyLink = true
-
-                // Also unwrap spatula proxy to provide direct connection if available
-                if (streamUrl.contains("spatula.hybrows.workers.dev") && streamUrl.contains("url=")) {
-                    extractNestedUrl(streamUrl)?.let { directUrl ->
-                        if (!seenUrls.contains(directUrl)) {
-                            seenUrls.add(directUrl)
-                            callback.invoke(
-                                newExtractorLink(
-                                    source = name,
-                                    name = "$server (Direct)",
-                                    url = directUrl,
-                                    type = if (directUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                ) {
-                                    this.referer = "https://www.rivestream.app/"
-                                    this.quality = quality
-                                }
-                            )
-                        }
-                    }
-                }
             }
         }
 
@@ -403,7 +406,7 @@ class FrameXTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val isTv = mediaType == "tv"
-        val serverList = listOf("Lisbon", "Nebula", "Solara")
+        val serverList = listOf("Lisbon", "Solara")
         var found = false
 
         for (server in serverList) {
@@ -449,29 +452,113 @@ class FrameXTVProvider : MainAPI() {
                 val parsed = tryParseJson<CineJoyDecryptedData>(decryptedJson)
                 val streams = parsed?.data?.stream ?: emptyList()
 
+                val cinejoyHeaders = mapOf(
+                    "Referer" to "https://cinejoy.pk/",
+                    "Origin" to "https://cinejoy.pk",
+                    "User-Agent" to defaultHeaders["User-Agent"]!!
+                )
+
                 for (stream in streams) {
                     val playlistUrl = stream.playlist?.trim() ?: continue
                     if (!playlistUrl.startsWith("http")) continue
 
-                    val quality = if (server == "Lisbon") Qualities.P1080.value else Qualities.P720.value
-
-                    callback.invoke(
-                        newExtractorLink(
-                            source = name,
-                            name = "Super Barbarian ($server)",
-                            url = playlistUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = "https://cinejoy.pk/"
-                            this.quality = quality
-                            this.headers = mapOf(
-                                "Referer" to "https://cinejoy.pk/",
-                                "Origin" to "https://cinejoy.pk",
-                                "User-Agent" to defaultHeaders["User-Agent"]!!
-                            )
+                    if (server == "Lisbon") {
+                        // Quick probe: Lisbon fails with HTTP 502 on some titles (causes Error 2004 in ExoPlayer)
+                        val probe = try {
+                            app.get(playlistUrl, headers = cinejoyHeaders, timeout = 2)
+                        } catch (e: Exception) {
+                            null
                         }
-                    )
-                    found = true
+                        if (probe == null || probe.code != 200) {
+                            continue // Skip dead transcoder
+                        }
+
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = "Super Barbarian (Lisbon) - 1080p",
+                                url = playlistUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = "https://cinejoy.pk/"
+                                this.quality = Qualities.P1080.value
+                                this.headers = cinejoyHeaders
+                            }
+                        )
+                        found = true
+                    } else if (server == "Solara") {
+                        // Solara returns an adaptive HLS master playlist with 1080p, 720p and 360p
+                        val masterRes = try {
+                            app.get(playlistUrl, headers = cinejoyHeaders, timeout = 3)
+                        } catch (e: Exception) {
+                            null
+                        }
+                        if (masterRes == null || masterRes.code != 200) continue
+
+                        val lines = masterRes.text.lines()
+                        var sub1080Url: String? = null
+                        var sub720Url: String? = null
+
+                        for (i in lines.indices) {
+                            val line = lines[i]
+                            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                                val nextUrl = lines.getOrNull(i + 1)?.trim()
+                                if (nextUrl != null && nextUrl.startsWith("http")) {
+                                    if (line.contains("1920") || line.contains("1080")) {
+                                        sub1080Url = nextUrl
+                                    } else if (line.contains("1280") || line.contains("720")) {
+                                        sub720Url = nextUrl
+                                    }
+                                }
+                            }
+                        }
+
+                        if (sub1080Url != null) {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = name,
+                                    name = "Super Barbarian (Solara) - 1080p [High Bitrate]",
+                                    url = sub1080Url,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = "https://cinejoy.pk/"
+                                    this.quality = Qualities.P1080.value
+                                    this.headers = cinejoyHeaders
+                                }
+                            )
+                            found = true
+                        }
+
+                        if (sub720Url != null) {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = name,
+                                    name = "Super Barbarian (Solara) - 720p",
+                                    url = sub720Url,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = "https://cinejoy.pk/"
+                                    this.quality = Qualities.P720.value
+                                    this.headers = cinejoyHeaders
+                                }
+                            )
+                            found = true
+                        }
+
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = "Super Barbarian (Solara) - Auto [Adaptive]",
+                                url = playlistUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = "https://cinejoy.pk/"
+                                this.quality = Qualities.P1080.value
+                                this.headers = cinejoyHeaders
+                            }
+                        )
+                        found = true
+                    }
                 }
             } catch (e: Exception) {
                 // Continue to next CineJoy server
