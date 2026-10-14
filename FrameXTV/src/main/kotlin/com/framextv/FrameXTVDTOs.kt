@@ -178,3 +178,39 @@ data class EpisodeData(
     val season: Int? = null,
     val episode: Int? = null
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CineJoyEncResponse(
+    @JsonProperty("status") val status: Int? = null,
+    @JsonProperty("result") val result: CineJoyEncResult? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CineJoyEncResult(
+    @JsonProperty("data") val data: String? = null,
+    @JsonProperty("state") val state: CineJoyEncState? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CineJoyEncState(
+    @JsonProperty("responseKey") val responseKey: String? = null,
+    @JsonProperty("aad") val aad: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CineJoyDecryptedData(
+    @JsonProperty("data") val data: CineJoyStreamHolder? = null,
+    @JsonProperty("status") val status: Int? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CineJoyStreamHolder(
+    @JsonProperty("stream") val stream: List<CineJoyStream>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CineJoyStream(
+    @JsonProperty("type") val type: String? = null,
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("playlist") val playlist: String? = null
+)

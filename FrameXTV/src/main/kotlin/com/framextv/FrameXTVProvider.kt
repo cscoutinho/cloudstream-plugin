@@ -5,8 +5,14 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class FrameXTVProvider : MainAPI() {
     override var mainUrl = "https://framextv.xyz"
@@ -339,6 +345,15 @@ class FrameXTVProvider : MainAPI() {
             // Non-fatal
         }
 
+        // Strategy 4: Super Barbarian / CineJoy (Direct Client-Side AES-GCM Decryption)
+        try {
+            if (extractCineJoy(mediaId, mediaType, season, episode, callback)) {
+                foundAnyLink = true
+            }
+        } catch (e: Exception) {
+            // Non-fatal
+        }
+
         // Dedicated Subtitles via OpenSubtitles CDN
         try {
             val subsUrl = "$API_URL/api/subtitles?id=$mediaId&type=$mediaType$tvQuery"
@@ -349,6 +364,120 @@ class FrameXTVProvider : MainAPI() {
         }
 
         return foundAnyLink
+    }
+
+    private fun base64UrlDecode(str: String): ByteArray {
+        var s = str.replace('-', '+').replace('_', '/')
+        while (s.length % 4 != 0) {
+            s += "="
+        }
+        return Base64.getDecoder().decode(s)
+    }
+
+    private fun decryptAesGcm(keyBase64Url: String, aadBase64Url: String, encryptedBytes: ByteArray): String? {
+        return try {
+            val keyBytes = base64UrlDecode(keyBase64Url)
+            val aadBytes = base64UrlDecode(aadBase64Url)
+
+            val iv = encryptedBytes.copyOfRange(0, 12)
+            val ciphertextAndTag = encryptedBytes.copyOfRange(12, encryptedBytes.size)
+
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            val keySpec = SecretKeySpec(keyBytes, "AES")
+            val gcmSpec = GCMParameterSpec(128, iv)
+
+            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
+            cipher.updateAAD(aadBytes)
+            val decrypted = cipher.doFinal(ciphertextAndTag)
+            String(decrypted, Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun extractCineJoy(
+        mediaId: String,
+        mediaType: String,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val isTv = mediaType == "tv"
+        val serverList = listOf("Lisbon", "Nebula", "Solara")
+        var found = false
+
+        for (server in serverList) {
+            try {
+                val targetUrl = StringBuilder("https://api.wing.st/?title=movie&type=")
+                    .append(if (isTv) "series" else "movie")
+                    .append("&year=&imdb=&tmdb=").append(mediaId)
+                    .append("&server=").append(server)
+                if (isTv) {
+                    targetUrl.append("&season=").append(season ?: 1)
+                        .append("&episode=").append(episode ?: 1)
+                }
+
+                val encUrl = "https://enc-dec.app/api/enc-cinejoy?url=" + URLEncoder.encode(targetUrl.toString(), "UTF-8")
+                val encRes = app.get(
+                    encUrl,
+                    headers = mapOf("Accept" to "application/json", "User-Agent" to defaultHeaders["User-Agent"]!!)
+                ).parsedSafe<CineJoyEncResponse>()
+
+                val dataB64 = encRes?.result?.data ?: continue
+                val state = encRes.result.state ?: continue
+                val responseKey = state.responseKey ?: continue
+                val aad = state.aad ?: continue
+
+                val reqBodyBytes = base64UrlDecode(dataB64)
+                val mediaTypeOctet = "application/octet-stream".toMediaTypeOrNull()
+                val requestBody = reqBodyBytes.toRequestBody(mediaTypeOctet)
+
+                val gatewayRes = app.post(
+                    "https://api.wing.st/g",
+                    requestBody = requestBody,
+                    headers = mapOf(
+                        "Content-Type" to "application/octet-stream",
+                        "Accept" to "application/json, text/plain, */*",
+                        "User-Agent" to defaultHeaders["User-Agent"]!!
+                    )
+                )
+
+                val encBytes = gatewayRes.body.byteStream().readBytes()
+                if (encBytes.size <= 28) continue
+
+                val decryptedJson = decryptAesGcm(responseKey, aad, encBytes) ?: continue
+                val parsed = tryParseJson<CineJoyDecryptedData>(decryptedJson)
+                val streams = parsed?.data?.stream ?: emptyList()
+
+                for (stream in streams) {
+                    val playlistUrl = stream.playlist?.trim() ?: continue
+                    if (!playlistUrl.startsWith("http")) continue
+
+                    val quality = if (server == "Lisbon") Qualities.P1080.value else Qualities.P720.value
+
+                    callback.invoke(
+                        newExtractorLink(
+                            source = name,
+                            name = "Super Barbarian ($server)",
+                            url = playlistUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = "https://cinejoy.pk/"
+                            this.quality = quality
+                            this.headers = mapOf(
+                                "Referer" to "https://cinejoy.pk/",
+                                "Origin" to "https://cinejoy.pk",
+                                "User-Agent" to defaultHeaders["User-Agent"]!!
+                            )
+                        }
+                    )
+                    found = true
+                }
+            } catch (e: Exception) {
+                // Continue to next CineJoy server
+            }
+        }
+        return found
     }
 
     private fun MediaItem.toSearchResponse(): SearchResponse? {
